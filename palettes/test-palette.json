@@ -1,0 +1,10 @@
+{
+  "name": "Palette Graphiste",
+  "colors": {
+    "primary": "#0055FF",
+    "secondary": "#FF5500",
+    "text": "#111111",
+    "background": "#FFFFFF",
+    "accent": "#00FFAA"
+  }
+}

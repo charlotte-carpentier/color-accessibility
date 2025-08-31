@@ -1,0 +1,26 @@
+{
+  "name": "color-accessibility",
+  "version": "1.0.0",
+  "description": "Tool to test color palettes for WCAG accessibility and color blindness.",
+  "main": "scripts/generateTable.js",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/generateTable.js"
+  },
+  "keywords": [
+    "accessibility",
+    "colors",
+    "WCAG",
+    "contrast",
+    "daltonism",
+    "color-blind"
+  ],
+  "author": "Charlotte Carpentier",
+  "license": "MIT",
+  "dependencies": {
+    "color-blind": "^0.1.3",
+    "exceljs": "^4.4.0",
+    "json2csv": "^5.0.7",
+    "tinycolor2": "^1.6.0"
+  }
+}
