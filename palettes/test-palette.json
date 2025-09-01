@@ -1,10 +1,11 @@
 {
-  "name": "Palette Graphiste",
+  "name": "palette lacrique",
   "colors": {
-    "primary": "#0055FF",
-    "secondary": "#FF5500",
-    "text": "#111111",
-    "background": "#FFFFFF",
-    "accent": "#00FFAA"
+    "primary": "#2f2ffe",
+    "secondary": "#f0c8b3",
+    "secondaryVariant": "#f9d9ca",
+    "accent1": "#14ccb2",
+    "accent2": "#ff00fb",
+    "accent3": "#ffc900"
   }
 }
