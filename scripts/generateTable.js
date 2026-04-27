@@ -1,249 +1,164 @@
-/* ===========================================================
-   @SCRIPT - COLOR ACCESSIBILITY EXCEL v2.0
-   - Generate Excel table for palette accessibility
-   - WCAG contrast checks (AA / AAA)
-   - APCA scores (WCAG 3.0 future standard)
-   - Daltonism checks (8 types)
-=========================================================== */
+/* ┌─────────────────────────────────────────────────────────┐
+   │ TOOL › Color Accessibility                              │
+   │ WCAG 2.2 contrast checks (AA / AA Large+UI / AAA)       │
+   │ Daltonism simulation (8 types)                          │
+   └─────────────────────────────────────────────────────────┘ */
+
+/**
+ * @fileoverview Excel accessibility report generator for color palettes.
+ * @see {@link https://www.w3.org/TR/WCAG22/#contrast-minimum|SC 1.4.3}
+ * @see {@link https://www.w3.org/TR/WCAG22/#non-text-contrast|SC 1.4.11}
+ *
+ * TODO v3.0 — APCA: directional algorithm (fg/bg not symmetric).
+ * Removed from WCAG 3.0 draft July 2023 — not legally binding as of 2026.
+ */
 
 import fs from "fs";
 import path from "path";
 import ExcelJS from "exceljs";
 import tinycolor from "tinycolor2";
 import colorBlind from "color-blind";
-import { APCAcontrast, sRGBtoY } from "apca-w3";
 
-// =========================
-// UTILS
-// =========================
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Configuration
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function luminance(hex) {
-  const c = tinycolor(hex).toRgb();
-  const rgb = [c.r, c.g, c.b].map((v) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-}
+const REFERENCE_COLORS  = { black: "#000000", white: "#FFFFFF" };
+const COL_WIDTHS        = [20, 20, 20, 26, 20, 26];
+const WCAG_THRESHOLDS   = { AA: 4.5, AA_LARGE: 3, AAA: 7 };
+const PASS_FILL         = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD6F5D6" } };
+const FAIL_FILL         = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFD6D6" } };
+const DALTONISM_TYPES   = [
+  "protanopia", "deuteranopia", "tritanopia", "achromatopsia",
+  "achromatomaly", "protanomaly", "deuteranomaly", "tritanomaly",
+];
+const HEADERS = ["", "", "AA (≥4.5)", "AA Grand texte/UI (≥3.0)", "AAA (≥7.0)", "Daltonisme (8 types)"];
+const FOOTER  = `Pour référence :
+Les ratios de contraste sont calculés selon la formule WCAG 2.2, standard légal en vigueur.
+AA (≥4.5) : texte courant. AA Grand texte/UI (≥3.0) : grands textes (18pt+ normal, 14pt+ gras) et composants d'interface (boutons, icônes, bordures de champs), SC 1.4.3 et SC 1.4.11.
+AAA (≥7.0) : confort maximal, non obligatoire.
+Daltonisme : 8 types testés : protanopie, deutéranopie, tritanopie, achromatopsie, achromatomalie, protanomalie, deutéranomalie, tritanomalie. Indicatif, non requis par la réglementation en vigueur.
+Généré avec HAT, Color Accessibility Tool v2.1, le ${new Date().toLocaleDateString()}`;
 
-function contrast(fg, bg) {
-  const L1 = luminance(fg);
-  const L2 = luminance(bg);
-  return L1 > L2 ? (L1 + 0.05) / (L2 + 0.05) : (L2 + 0.05) / (L1 + 0.05);
-}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Utils
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function wcagCheck(ratio, level = "AA") {
-  if (level === "AA") {
-    const pass = ratio >= 4.5 ? "✅" : "❌";
-    return `${ratio.toFixed(1)} ${pass}`;
-  }
-  if (level === "AAA") {
-    const pass = ratio >= 7 ? "✅" : "❌";
-    return `${ratio.toFixed(1)} ${pass}`;
-  }
-  return `${ratio.toFixed(1)} ❌`;
-}
+const luminance = (hex) => {
+  const { r, g, b } = tinycolor(hex).toRgb();
+  return [r, g, b]
+    .map((v) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; })
+    .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+};
 
-function daltonPass(fg, bg) {
-  const types = [
-    "protanopia",
-    "deuteranopia",
-    "tritanopia",
-    "achromatopsia",
-    "achromatomaly",
-    "protanomaly",
-    "deuteranomaly",
-    "tritanomaly"
-  ];
-  return types.every((type) => {
-    const simFg = colorBlind[type](fg);
-    const ratio = contrast(simFg, bg);
-    return ratio >= 4.5;
-  }) ? "✅" : "❌";
-}
+const contrast = (a, b) => {
+  const [L1, L2] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (L1 + 0.05) / (L2 + 0.05);
+};
 
-function apcaCheck(fg, bg) {
-  const fgRgb = tinycolor(fg).toRgb();
-  const bgRgb = tinycolor(bg).toRgb();
-  const fgArray = [fgRgb.r, fgRgb.g, fgRgb.b];
-  const bgArray = [bgRgb.r, bgRgb.g, bgRgb.b];
-  const score = Math.abs(APCAcontrast(sRGBtoY(fgArray), sRGBtoY(bgArray)));
-  const pass = score >= 75 ? "✅" : "❌";
-  return `${score.toFixed(1)} ${pass}`;
-}
+const wcagCheck = (ratio, level) => {
+  const pass = ratio >= WCAG_THRESHOLDS[level];
+  return { text: `${ratio.toFixed(1)} ${pass ? "✓" : "✗"}`, fill: pass ? PASS_FILL : FAIL_FILL };
+};
 
-// =========================
-// EXCEL GENERATION
-// =========================
+// Simulates both colors — not just fg — for accurate pair testing
+const daltonCheck = (a, b) => {
+  const pass = DALTONISM_TYPES.every((t) => contrast(colorBlind[t](a), colorBlind[t](b)) >= 4.5);
+  return { text: pass ? "✓" : "✗", fill: pass ? PASS_FILL : FAIL_FILL };
+};
 
-async function generateExcel(palette) {
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Palette");
+const buildRow = (hex1, hex2) => {
+  const ratio = contrast(hex1, hex2);
+  const aa    = wcagCheck(ratio, "AA");
+  const aaLarge = wcagCheck(ratio, "AA_LARGE");
+  const aaa   = wcagCheck(ratio, "AAA");
+  const dalton = daltonCheck(hex1, hex2);
+  const qualityScore =
+    (aa.text.includes("✓") ? 4 : 0) +
+    (aaa.text.includes("✓") ? 3 : 0) +
+    (dalton.text === "✓" ? 2 : 0);
+  return { hex1, hex2, aa, aaLarge, aaa, dalton, ratio, qualityScore };
+};
 
-  const headers = [
-    "Original (Text / Background)",
-    "AA (≥4.5)",
-    "AAA (≥7.0)",
-    "Daltonism (8 types)",
-    "APCA (≥75) - Future"
-  ];
-  const headerRow = worksheet.addRow(headers);
+// Deduplicated unique pairs, sorted by quality then ratio
+const buildPairs = (colors) => {
+  const seen = new Set();
+  return colors
+    .flatMap((a, i) => colors.slice(i + 1).map((b) => ({ a, b, key: [a, b].sort().join("/") })))
+    .filter(({ key }) => !seen.has(key) && seen.add(key))
+    .map(({ a, b }) => buildRow(a, b))
+    .sort((a, b) => (b.qualityScore - a.qualityScore) || (b.ratio - a.ratio));
+};
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Excel
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const generateExcel = async (palette) => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Palette");
+
+  const headerRow = ws.addRow(HEADERS);
   headerRow.font = { bold: true };
   headerRow.alignment = { horizontal: "center", vertical: "middle" };
 
-  const colors = palette.colors;
-  const colorNames = Object.keys(colors);
+  const addSection = (label, rows) => {
+    const h = ws.addRow([label]);
+    h.font = { bold: true, italic: true };
+    ws.mergeCells(`A${h.number}:F${h.number}`);
 
-  const referenceColors = {
-    "black": "#000000",
-    "white": "#FFFFFF"
+    rows.forEach(({ hex1, hex2, aa, aaLarge, aaa, dalton }) => {
+      const lbl = `${hex1} / ${hex2}`;
+      const r   = ws.addRow([lbl, lbl, aa.text, aaLarge.text, aaa.text, dalton.text]);
+      r.alignment = { horizontal: "center", vertical: "middle" };
+      r.getCell("A").fill = { type: "pattern", pattern: "solid", fgColor: { argb: hex2.replace("#", "") } };
+      r.getCell("A").font = { color: { argb: hex1.replace("#", "") } };
+      r.getCell("B").fill = { type: "pattern", pattern: "solid", fgColor: { argb: hex1.replace("#", "") } };
+      r.getCell("B").font = { color: { argb: hex2.replace("#", "") } };
+      [["C", aa], ["D", aaLarge], ["E", aaa], ["F", dalton]].forEach(([col, check]) => {
+        r.getCell(col).fill = check.fill;
+      });
+    });
   };
 
-  // Generate palette combinations
-  const paletteRows = [];
-  for (const fgName of colorNames) {
-    for (const bgName of colorNames) {
-      if (fgName === bgName) continue;
-      const fg = colors[fgName];
-      const bg = colors[bgName];
-      const ratio = contrast(fg, bg);
-      const aa = wcagCheck(ratio, "AA");
-      const aaa = wcagCheck(ratio, "AAA");
-      const dalton = daltonPass(fg, bg);
-      const apca = apcaCheck(fg, bg);
+  const paletteHexes   = Object.values(palette.colors);
+  const referenceHexes = Object.values(REFERENCE_COLORS);
 
-      let qualityScore = 0;
-      if (aa.includes("✅")) qualityScore += 4;
-      if (aaa.includes("✅")) qualityScore += 3;
-      if (dalton === "✅") qualityScore += 2;
-      if (apca.includes("✅")) qualityScore += 1;
+  addSection("=== RATIO PALETTE ===", buildPairs(paletteHexes));
 
-      paletteRows.push([
-        `${fg} / ${bg}`,
-        aa,
-        aaa,
-        dalton,
-        apca,
-        ratio,
-        qualityScore
-      ]);
-    }
-  }
-  paletteRows.sort((a, b) => {
-    const qualityA = a[6] || 0;
-    const qualityB = b[6] || 0;
-    const ratioA = a[5] || 0;
-    const ratioB = b[5] || 0;
-    return qualityB - qualityA || ratioB - ratioA;
-  });
+  const refPairs = paletteHexes
+    .flatMap((hex) => referenceHexes.map((ref) => buildRow(hex, ref)))
+    .sort((a, b) => (b.qualityScore - a.qualityScore) || (b.ratio - a.ratio));
+  addSection("=== RATIO NOIR/BLANC ===", refPairs);
 
-  // Generate reference combinations (palette vs black/white)
-  const referenceRows = [];
-  const allColors = { ...colors, ...referenceColors };
-  for (const fgName of Object.keys(allColors)) {
-    for (const bgName of Object.keys(allColors)) {
-      if (fgName === bgName) continue;
-      if (!referenceColors[fgName] && !referenceColors[bgName]) continue;
-      if ((fgName === "black" && bgName === "white") || (fgName === "white" && bgName === "black")) continue;
-      const fg = allColors[fgName];
-      const bg = allColors[bgName];
-      const ratio = contrast(fg, bg);
-      const aa = wcagCheck(ratio, "AA");
-      const aaa = wcagCheck(ratio, "AAA");
-      const dalton = daltonPass(fg, bg);
-      const apca = apcaCheck(fg, bg);
-
-      let qualityScore = 0;
-      if (aa.includes("✅")) qualityScore += 4;
-      if (aaa.includes("✅")) qualityScore += 3;
-      if (dalton === "✅") qualityScore += 2;
-      if (apca.includes("✅")) qualityScore += 1;
-
-      referenceRows.push([
-        `${fg} / ${bg}`,
-        aa,
-        aaa,
-        dalton,
-        apca,
-        ratio,
-        qualityScore
-      ]);
-    }
-  }
-  referenceRows.sort((a, b) => {
-    const qualityA = a[6] || 0;
-    const qualityB = b[6] || 0;
-    const ratioA = a[5] || 0;
-    const ratioB = b[5] || 0;
-    return qualityB - qualityA || ratioB - ratioA;
-  });
-
-  const paletteHeaderRow = worksheet.addRow(["=== PALETTE COMBINATIONS ==="]);
-  paletteHeaderRow.font = { bold: true, italic: true };
-  worksheet.mergeCells(`A${paletteHeaderRow.number}:E${paletteHeaderRow.number}`);
-
-  paletteRows.forEach((row) => {
-    const excelRow = worksheet.addRow(row.slice(0, 5));
-    excelRow.alignment = { horizontal: "center", vertical: "middle" };
-    const originalCell = excelRow.getCell("A");
-    const [origFg, origBg] = row[0].split(" / ");
-    originalCell.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: origBg.replace("#", "") }
-    };
-    originalCell.font = { color: { argb: origFg.replace("#", "") } };
-  });
-
-  const refHeaderRow = worksheet.addRow(["=== TESTS WITH BLACK/WHITE ==="]);
-  refHeaderRow.font = { bold: true, italic: true };
-  worksheet.mergeCells(`A${refHeaderRow.number}:E${refHeaderRow.number}`);
-
-  referenceRows.forEach((row) => {
-    const excelRow = worksheet.addRow(row.slice(0, 5));
-    excelRow.alignment = { horizontal: "center", vertical: "middle" };
-    const originalCell = excelRow.getCell("A");
-    const [origFg, origBg] = row[0].split(" / ");
-    originalCell.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: origBg.replace("#", "") }
-    };
-    originalCell.font = { color: { argb: origFg.replace("#", "") } };
-  });
-
-  const footerText = [
-    "For reference:",
-    "WCAG contrast ratios calculated using WCAG 2.1 formula (current legal standard).",
-    "APCA scores calculated using WCAG 3.0 algorithm (future standard, not yet legally binding).",
-    "Daltonism includes 8 types: protanopia, deuteranopia, tritanopia, achromatopsia, achromatomaly, protanomaly, deuteranomaly, tritanomaly.",
-    `Generated with Color Accessibility Tool v2.0 on ${new Date().toLocaleDateString()}`
-  ].join("\n");
-  const footerRow = worksheet.addRow([footerText]);
+  const footerRow = ws.addRow([FOOTER]);
   footerRow.alignment = { horizontal: "left", wrapText: true };
-  footerRow.height = 100;
-  worksheet.mergeCells(`A${footerRow.number}:E${footerRow.number}`);
+  footerRow.height = 140;
+  ws.mergeCells(`A${footerRow.number}:F${footerRow.number}`);
 
-  worksheet.columns.forEach((col) => { col.width = 30; });
+  ws.columns.forEach((col, i) => { col.width = COL_WIDTHS[i] ?? 14; });
 
   const fileName = `color_accessibility_${palette.name.replace(/\s+/g, "_")}.xlsx`;
-  await workbook.xlsx.writeFile(fileName);
+  await wb.xlsx.writeFile(fileName);
   console.log(`Excel file generated: ${fileName}`);
-}
+};
 
-// =========================
-// MAIN
-// =========================
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Init
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function main() {
+const main = async () => {
   const paletteDir = path.resolve("./palettes");
   const files = fs.readdirSync(paletteDir).filter((f) => f.endsWith(".json"));
-
   for (const file of files) {
-    const palettePath = path.join(paletteDir, file);
-    const palette = JSON.parse(fs.readFileSync(palettePath, "utf-8"));
+    const palette = JSON.parse(fs.readFileSync(path.join(paletteDir, file), "utf-8"));
     await generateExcel(palette);
   }
-}
+};
 
 main().catch(console.error);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// May your bugs be forever exiled to the shadow realm ✦
+// HAT · 2026
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
